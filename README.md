@@ -1,10 +1,14 @@
 # CAN Bootloader
+
 CANbus bootloader (Currently only for STM32F103 microcontrollers)
+
 The bootloader lives in the first 12k of flash on the microcontroller, and runs every time the microcontroller resets or powers up.
+
 Heavily inspired by https://github.com/matejx/stm32f1-CAN-bootloader/blob/master/prg.py, but using the STM32CubeMX HAL
 
 ## Usage
 Build and flash the bootloader to the board. Make sure to set the `board_id` correctly!
+
 Install the required python packages from `can_flash/requirements.txt`:
 ```bash
 cd can_flash/
@@ -18,6 +22,7 @@ python3 can_flash.py [board_id] [path/to/firmware.bin]
 ## Necessary application changes
 The following changes must be made to the firmware to be able to flash it on a board with the CAN bootloader installed:
 1. Modify linker script
+
   Replace the following line in `STM32F103C8Tx_FLASH.ld`:
   ```ld
   /*Before*/
@@ -45,6 +50,8 @@ switch (msg.StdId) {
 ...
 ```
 ## Protocol
+The bootloader communicates over the CAN bus at a rate of 500kBaud. This must match the baud rate of the application so that the flasher script can send a message to the application to reset.
+
 ### The bootloader implements 4 commands:
 
     Write page buffer (BL_CMD_WRITE_BUF) is used to fill the bootloader's page buffer (in RAM) with data
@@ -76,8 +83,26 @@ Each board appearing on the CAN bus should have a unique board ID. This assures 
     page count (par1), number of pages the firmware uses
     firmware CRC (par2), entire firmware CRC, if not matching the flash contents, bootloader will not flash firmware CRC
 
-### To program the application firmware:
+## Bootloader operation:
+Normal boot sequence:
+1. Microcontroller starts up/resets
+2. Bootloader code begins listening for CAN frames with ID 0xB0
+3. Listening times out after 200ms
+4. Bootloader checks if the application code matches the stored CRC.
+5. If the CRC is valid, the bootloader writes flag to RAM and resets the microcontroller
+6. Startup code detects flag in RAM and jumps to application
 
+Flashing sequence:
+1. Microcontroller starts up/resets
+2. Bootloader code begins listening for CAN frames with ID 0xB0
+3. CAN frame received within 200ms
+4. Bootloader continues listening for CAN messages with a 2 second timeout
+5. After CAN communication times out, the bootloader checks the CRC of the application code
+5. If the CRC is valid, the bootloader writes flag to RAM and resets the microcontroller
+6. Startup code detects flag in RAM and jumps to application
+
+### To program the application firmware:
+- Send a Ping command and wait for the bootloader to respond. This may take several tries as the MCU resets/initializes.
 - Fill the entire page buffer 4 bytes at a time using several Write page buffer commands.
 - Execute Write page command providing the correct page data CRC. The bootloader will compare your CRC to the CRC of its page buffer. If they match, it will flash the page.
 - Repeat above steps for all pages.
