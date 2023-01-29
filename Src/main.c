@@ -21,7 +21,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <string.h>
 
 /* USER CODE END Includes */
 
@@ -48,6 +47,9 @@ IWDG_HandleTypeDef hiwdg;
 
 /* USER CODE BEGIN PV */
 
+// 1 if a message has been received
+volatile uint8_t message_received = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -63,72 +65,6 @@ static void MX_IWDG_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-
-//-----------------------------------------------------------------------------
-//  Defines
-//-----------------------------------------------------------------------------
-
-
-#define PAGE_SIZE 0x100 // Page size in words
-
-
-//-----------------------------------------------------------------------------
-//  Typedefs
-//-----------------------------------------------------------------------------
-
-struct bl_pvars_t // size has to be a multiple of 4
-{
-	uint32_t app_page_count;
-	uint32_t app_crc;
-
-  // Board ID for bootloader. Must be different for each board
-  uint32_t bl_board_id;
-};
-
-struct __packed bl_cmd_t 
-{
-	uint8_t brd;
-	uint8_t cmd;
-	uint16_t par1;
-	uint32_t par2;
-};
-
-_Static_assert (sizeof(struct bl_cmd_t) == 8);
-
-//-----------------------------------------------------------------------------
-// Constants
-//-----------------------------------------------------------------------------
-
-// CAN IDs for bootloader to respond to
-static const uint16_t CANID_BOOTLOADER_CMD = 0xB0;
-static const uint16_t CANID_BOOTLOADER_RPLY = 0xB1;
-
-// Magic value stored in memory - if this is present, skip bootloader and jump to app
-static const uint32_t MAGIC_VAL = (uint32_t)(0x36051bf3);
-static uint32_t* const MAGIC_ADDR = (uint32_t*)(SRAM_BASE + 0x1000);
-
-// Base address to write app
-static const uint32_t* APP_BASE = (uint32_t*)(0x08003000);
-static const uint16_t PAGE_COUNT = 64 - 12;
-
-// Location where pvars are stored
-#define PVARS ((struct bl_pvars_t *)(APP_BASE - PAGE_SIZE))
-
-// Bootloader commands
-static const uint8_t BL_CMD_WRITE_BUF = 1; // Writes to the page buffer
-static const uint8_t BL_CMD_WRITE_PAGE = 2; // Writes from the page buffer to flash (after verifying)
-static const uint8_t BL_CMD_WRITE_CRC = 3; // Verify the entire program with a CRC
-static const uint8_t BL_CMD_PING = 4; // Do nothing and respond
-
-// How long the bootloader runs on startup if it doesn't receive a CAN message
-// The main application will not run until this timeout expires
-static const uint32_t STARTUP_TO = 200; // milliseconds
-// 1 if a message has been received
-uint8_t message_received = 0;
-
-// Timeout after last CAN message to restart
-static const uint32_t NOCANRX_TO = 2000; // milliseconds
-
 //-----------------------------------------------------------------------------
 //  Global variables
 //-----------------------------------------------------------------------------
@@ -139,6 +75,25 @@ static volatile uint32_t lastcanrx;
 //-----------------------------------------------------------------------------
 //  utility functions
 //-----------------------------------------------------------------------------
+
+// Clock config that's almost a kilobyte(!) smaller than the CubeMX version.
+void configClocks(void) {
+  /* enable HSE */
+  RCC->CR |= 0x00010001;
+  while ((RCC->CR & 0x00020000) == 0); /* for it to come on */
+
+  /* enable flash prefetch buffer */
+  FLASH->ACR = 0x00000012;
+  /* Configure PLL */
+  RCC->CFGR |= 0x001D0400; /* pll=72Mhz,APB1/2=36Mhz,AHB=72Mhz */
+
+  RCC->CR |= 0x01000000; /* enable the pll */
+  while ((RCC->CR & 0x03000000) == 0);         /* wait for it to come on */
+  /* Set SYSCLK as PLL */
+  RCC->CFGR |= 0x00000002;
+  while ((RCC->CFGR & 0x00000008) == 0); /* wait for it to come on */
+}
+
 
 uint8_t __fls_wr(const uint32_t* page, const uint32_t* buf, uint32_t len)
 {
@@ -198,7 +153,7 @@ void bl_tx_resp(uint8_t cmd, uint8_t ec)
 	m.RTR = CAN_RTR_DATA;
 	m.DLC = 3;
   uint8_t data[3];
-	data[0] = PVARS->bl_board_id;
+	data[0] = FLASH_VARS->board.id;
 	data[1] = cmd;
 	data[2] = ec;
   uint32_t mailbox;
@@ -221,9 +176,9 @@ void PreSystemInit(void)
 	}
 }
 
-// //-----------------------------------------------------------------------------
-// //  CAN msg processing
-// //-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+//  CAN msg processing
+//-----------------------------------------------------------------------------
 
 void process_can_msg(CAN_RxHeaderTypeDef* msg, uint8_t data[])
 {
@@ -232,21 +187,24 @@ void process_can_msg(CAN_RxHeaderTypeDef* msg, uint8_t data[])
 	if( (msg->StdId == CANID_BOOTLOADER_CMD) && (msg->DLC == 8) ) {
 		struct bl_cmd_t blc;
 		memcpy(&blc, data, 8);
-		if( blc.brd != PVARS->bl_board_id ) return;
+
+    // All boards respond to ping command
+    if( blc.cmd == BL_CMD_PING ) {  // ping command - just respond with OK
+      bl_tx_resp(blc.cmd, BL_SUCCESS); // OK
+      return;
+    }
+
+		if( blc.brd != FLASH_VARS->board.id ) return;
     message_received = 1;
 		lastcanrx = HAL_GetTick();
 
     switch (blc.cmd) {
-      case BL_CMD_PING: // ping command - just respond with OK
-        bl_tx_resp(blc.cmd, 0); // OK
-        break;
-        
       case BL_CMD_WRITE_BUF: // write buffer command, par1 = offset, par2 =data
         if( blc.par1 < PAGE_SIZE ) {
           pagebuf[blc.par1] = blc.par2;
-          bl_tx_resp(blc.cmd, 0); // OK
+          bl_tx_resp(blc.cmd, BL_SUCCESS); // OK
         } else {
-          bl_tx_resp(blc.cmd, 1); // invalid ofs
+          bl_tx_resp(blc.cmd, BL_ERR_INVALID_OFFSET); // invalid ofs
         }
 			  break;
 
@@ -257,15 +215,15 @@ void process_can_msg(CAN_RxHeaderTypeDef* msg, uint8_t data[])
             uint32_t pgofs = blc.par1 * PAGE_SIZE;
             uint8_t r = fls_wr(APP_BASE + pgofs, pagebuf, PAGE_SIZE);
             if( r ) {
-              bl_tx_resp(blc.cmd, 3); // verify failed
+              bl_tx_resp(blc.cmd, BL_ERR_FLASH_WRITE); // verify failed
             } else {
-              bl_tx_resp(blc.cmd, 0); // OK
+              bl_tx_resp(blc.cmd, BL_SUCCESS); // OK
             }
           } else {
-            bl_tx_resp(blc.cmd, 2); // invalid CRC
+            bl_tx_resp(blc.cmd, BL_ERR_INVALID_CRC); // invalid CRC
           }
         } else {
-          bl_tx_resp(blc.cmd, 1); // invalid pagenum
+          bl_tx_resp(blc.cmd, BL_ERR_INVALID_PAGE_NUM); // invalid pagenum
         }
         break;
 
@@ -273,21 +231,44 @@ void process_can_msg(CAN_RxHeaderTypeDef* msg, uint8_t data[])
         if( blc.par1 <= PAGE_COUNT ) {
           uint32_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)APP_BASE, blc.par1 * PAGE_SIZE);
           if( crc == blc.par2 ) {
-            struct bl_pvars_t pv;
-            pv.app_page_count = blc.par1;
-            pv.app_crc = blc.par2;
-            pv.bl_board_id = PVARS->bl_board_id;
-            uint8_t r = fls_wr(APP_BASE - PAGE_SIZE, (uint32_t*)&pv, sizeof(pv)/4);
+            // New flash data to store
+            struct bl_vars_t vars;
+            // Update app data
+            vars.app.page_count = blc.par1;
+            vars.app.crc = blc.par2;
+
+            // Keep board data
+            vars.board = FLASH_VARS->board;
+
+            uint8_t r = fls_wr(APP_BASE - PAGE_SIZE, (uint32_t*)&vars, sizeof(vars)/4);
             if( r ) {
-              bl_tx_resp(blc.cmd, 3); // verify failed
+              bl_tx_resp(blc.cmd, BL_ERR_FLASH_WRITE); // verify failed
             } else {
-              bl_tx_resp(blc.cmd, 0); // OK
+              bl_tx_resp(blc.cmd, BL_SUCCESS); // OK
             }
           } else {
             bl_tx_resp(blc.cmd, 2); // invalid CRC
           }
         } else {
           bl_tx_resp(blc.cmd, 1); // invalid number of pages
+        }
+        break;
+
+      case BL_CMD_SET_ID: // Write ID command, par1 = new ID
+        if( blc.par1 < 256) {
+          // Read data from flash
+          struct bl_vars_t vars = *FLASH_VARS;
+          // Update board ID
+          vars.board.id = (uint8_t) blc.par1;
+
+          uint8_t r = fls_wr(APP_BASE - PAGE_SIZE, (uint32_t*)&vars, sizeof(vars)/4);
+          if( r ) {
+            bl_tx_resp(blc.cmd, BL_ERR_FLASH_WRITE); // verify failed
+          } else {
+            bl_tx_resp(blc.cmd, BL_SUCCESS); // OK
+          }
+        } else {
+          bl_tx_resp(blc.cmd, BL_ERR_INVALID_PAGE_NUM);
         }
         break;
     }
@@ -319,7 +300,7 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  // configClocks();
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -336,17 +317,17 @@ int main(void)
   MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
 
-  // if( SysTick_Config(SystemCoreClock / 1000) ) { // setup SysTick Timer for 1 msec interrupts
-	// 	while( 1 );                                  // capture error
-	// }
-
-	// RCC_AHBPeriphClockCmd(RCC_AHBPeriph_CRC, ENABLE);
-
-	// IWDG_WriteAccessCmd(IWDG_WriteAccess_Enable);
-	// IWDG_SetPrescaler(IWDG_Prescaler_32); // approx 3s
-	// IWDG_SetReload(0xfff);
-	// IWDG_ReloadCounter();
-	// IWDG_Enable();
+  // Check build ID in flash
+  volatile uint64_t t1 = BUILD_TIMESTAMP;
+  volatile uint64_t t2 = FLASH_VARS->board.bl_build_version;
+  if(BUILD_TIMESTAMP != FLASH_VARS->board.bl_build_version) { 
+    // Fresh BL build, reset FLASH_VARS
+    struct bl_vars_t new_bl_vars = {0};
+    new_bl_vars.board.bl_build_version = BUILD_TIMESTAMP;
+    if(fls_wr(APP_BASE - PAGE_SIZE, (uint32_t*)&new_bl_vars, sizeof(new_bl_vars)/4)) {
+      Error_Handler();
+    }
+  }
 
   /* USER CODE END 2 */
 
@@ -361,13 +342,11 @@ int main(void)
     else timeout=STARTUP_TO;
 
 		if( HAL_GetTick() - lastcanrx > timeout ) {
-			struct bl_pvars_t pv;
-			memcpy(&pv, APP_BASE - PAGE_SIZE, sizeof(pv));
 
-			if( (pv.app_page_count > 0) && (pv.app_page_count <= PAGE_COUNT) ) {
+			if( (FLASH_VARS->app.page_count > 0) && (FLASH_VARS->app.page_count <= PAGE_COUNT) ) {
 				// Check app CRC before jumping to the app
-				uint32_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)APP_BASE, pv.app_page_count * PAGE_SIZE);
-				if( crc == pv.app_crc ) {
+				uint32_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)APP_BASE, FLASH_VARS->app.page_count * PAGE_SIZE);
+				if( crc == FLASH_VARS->app.crc ) {
 					*(MAGIC_ADDR) = MAGIC_VAL;
 				}
 			}

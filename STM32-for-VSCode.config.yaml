@@ -10,7 +10,7 @@ target: CAN_Bootloader
 # Can be C or C++
 language: C
 
-optimization: Og
+optimization: Os
 
 # MCU settings
 targetMCU: stm32f1x

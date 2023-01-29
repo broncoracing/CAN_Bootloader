@@ -1,99 +1,31 @@
-import datetime
-import sys
-from sys import platform
-
-import can
 import crcmod as crcmod
+import argparse
 
-PG_SIZE = 1024  # Page size in bytes
-BL_WBUF = 1
-BL_WPAGE = 2
-BL_WCRC = 3
-BL_PING = 4
-CANID_BL_CMD = 0xb0
-CANID_BL_RPL = 0xb1
+from can_util import *
 
 
-# Create CAN message from id & data
-def canmsg(id, data):
-    if len(data) > 8:
-        raise ValueError("invalid data")
-    m = can.Message(arbitration_id=id, is_extended_id=False, data=data)
-    return m
+def list_connected_boards():
+    print('Searching for connected boards...')
+    bus = get_can_bus()
+    boards = bl_list_connected_boards(bus)
+    if len(boards) == 0:
+        print('No boards detected.')
+    else:
+        print(f'Detected boards with the following IDs: {boards}')
+        if 0 in boards:
+            print('\nAt least one board with ID 0 detected.\n'
+                  'This board likely has a freshly programmed bootloader.\n'
+                  'Be sure to set a proper ID before flashing these boards.')
 
 
-# Create bootloader CAN message
-def bl_cmd(bus, board_id, cmd, par1, par2):
-    # Create data for CAN message
-    data = bytearray(8)
-    data[0] = board_id
-    data[1] = cmd
-    data[2:4] = par1.to_bytes(2, 'little')
-    data[4:8] = par2[::-1]
-
-    bus.send(canmsg(CANID_BL_CMD, data), 0.5)
-
-
-# Wait for a bootloader response
-def bl_waitresp(bus, board_id, bl_cmd, timeout):
-    absto = datetime.datetime.now() + datetime.timedelta(seconds=timeout)
-    while datetime.datetime.now() < absto:
-        m = bus.recv(timeout)
-        if m is not None:
-            if (m.arbitration_id == CANID_BL_RPL) and (m.dlc >= 3) and (m.data[0] == board_id) and (m.data[1] == bl_cmd):
-                return m.data[2]
-    return None
-
-
-def bl_cmd_response(bus, board_id, cmd, par1, par2, timeout_sec=1.0):
-    bl_cmd(bus, board_id, cmd, par1, par2)
-    r = bl_waitresp(bus, board_id, cmd, timeout_sec)
-    if r is None:
-        raise RuntimeError('Did not receive reply from board')
-    if r > 0:
-        raise RuntimeError(f'Bootloader command {cmd} error #{r}')
-    return r
-
-
-def bl_wait_for_connection(bus, board_id, timeout_sec=0.1, retries=10):
-    for i in range(retries):
-        # Ping bootloader
-        bl_cmd(bus, board_id, BL_PING, 0, [0] * 4)
-        # Wait for a response
-        r = bl_waitresp(bus, board_id, BL_PING, timeout_sec)
-        if r is not None:
-            return True
-    return False
-
-
-# -----------------------------------------------------------------------------
-if __name__ == "__main__":
-    # TODO Use Argparse
-    if len(sys.argv) < 3:
-        print("usage: prg.py board_id file.bin")
-        sys.exit(0)
-
-    board_id = int(sys.argv[1])
-
-    bus = None
-    if platform == "linux" or platform == "linux2" or platform == "darwin":
-        # Stock slcan firmware on Linux (Assuming os x works the same?)
-        bus = can.interface.Bus(bustype='slcan', channel='/dev/ttyACM1', bitrate=500000)
-    elif platform == "win32":
-        bus = can.interface.Bus(bustype='slcan', channel='COM0', bitrate=500000)
-
-    if bus is None:
-        print('Could not recognize OS to initialize CAN bus.')
-        exit(1)
-
-    # Read the program file
-    filepath = sys.argv[2]
-    # Check that the right file type is being uploaded
+def flash(board_id, filepath):
     if not filepath.endswith('.bin'):
         response = input('File path does not end in ".bin". Flash anyway? (Y/n): ')
         if 'n' in response.lower():
             print('Firmware flashing canceled')
             exit(0)
+
+    bus = get_can_bus()
 
     f = open(filepath, "rb")
     b = bytearray(f.read())
@@ -156,3 +88,67 @@ if __name__ == "__main__":
         exit(1)
 
     print("Board flashed successfully")
+
+
+def change_id(board_id, new_id):
+    if new_id < 0 or new_id > 255:
+        print('Invalid ID. Choose an ID from 0-255.')
+        exit(1)
+
+    bus = get_can_bus()
+
+    print(f'Attempting to connect to board with ID {board_id}')
+    if not bl_wait_for_connection(bus, board_id):
+        print('Could not connect to board.')
+        exit(1)
+    print(f'Changing board ID {board_id} to {new_id}...')
+    # Change ID
+    bl_cmd(bus, board_id, BL_SET_ID, new_id, [0] * 4)
+    r = bl_waitresp(bus, new_id, BL_SET_ID, timeout=1.0)
+    if r is None:
+        raise RuntimeError('Did not receive reply from board')
+    if r > 0:
+        raise RuntimeError(f'Bootloader command SET_ID returned error #{r}')
+
+    print('Successfully changed board ID')
+
+
+def main():
+    parser = argparse.ArgumentParser(description='CAN Bootloader flashing utility')
+    subparsers = parser.add_subparsers(title='commands', dest='command')
+
+    # Flash sub-parser
+    flash_parser = subparsers.add_parser('flash', help='Flash a board')
+    flash_parser.add_argument('-b', '--board', type=int, help='Integer input for board ID', required=True)
+    flash_parser.add_argument('filepath', nargs='?', help='Path to the .bin file to be flashed')
+
+    # Change ID sub-parser
+    change_id_parser = subparsers.add_parser('change_id', help='Change the ID of a board')
+    change_id_parser.add_argument('-b', '--board', type=int, help='Integer input for board ID', required=True)
+    change_id_parser.add_argument('-i', '--id', type=int, help='new ID for the board', required=True)
+
+    # List sub-parser
+    list_parser = subparsers.add_parser('list', help='List connected boards')
+
+    args = parser.parse_args()
+
+    if args.command == 'flash':
+        if args.filepath is None:
+            print("Error: filepath is required for flash command")
+            flash_parser.print_help()
+            return
+        flash(args.board, args.filepath)
+    elif args.command == 'change_id':
+        change_id(args.board, args.id)
+    elif args.command == 'list':
+        list_connected_boards()
+    else:
+        parser.print_help()
+        print()
+        flash_parser.print_help()
+        print()
+        change_id_parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
