@@ -71,6 +71,7 @@ static void MX_IWDG_Init(void);
 
 #define PAGE_SIZE 0x100 // Page size in words
 
+
 //-----------------------------------------------------------------------------
 //  Typedefs
 //-----------------------------------------------------------------------------
@@ -79,6 +80,9 @@ struct bl_pvars_t // size has to be a multiple of 4
 {
 	uint32_t app_page_count;
 	uint32_t app_crc;
+
+  // Board ID for bootloader. Must be different for each board
+  uint32_t bl_board_id;
 };
 
 struct __packed bl_cmd_t 
@@ -99,9 +103,6 @@ _Static_assert (sizeof(struct bl_cmd_t) == 8);
 static const uint16_t CANID_BOOTLOADER_CMD = 0xB0;
 static const uint16_t CANID_BOOTLOADER_RPLY = 0xB1;
 
-// Board ID for bootloader. Must be different for each board
-static const uint8_t BL_BOARD_ID = 1;
-
 // Magic value stored in memory - if this is present, skip bootloader and jump to app
 static const uint32_t MAGIC_VAL = (uint32_t)(0x36051bf3);
 static uint32_t* const MAGIC_ADDR = (uint32_t*)(SRAM_BASE + 0x1000);
@@ -109,6 +110,9 @@ static uint32_t* const MAGIC_ADDR = (uint32_t*)(SRAM_BASE + 0x1000);
 // Base address to write app
 static const uint32_t* APP_BASE = (uint32_t*)(0x08003000);
 static const uint16_t PAGE_COUNT = 64 - 12;
+
+// Location where pvars are stored
+#define PVARS ((struct bl_pvars_t *)(APP_BASE - PAGE_SIZE))
 
 // Bootloader commands
 static const uint8_t BL_CMD_WRITE_BUF = 1; // Writes to the page buffer
@@ -129,6 +133,7 @@ static const uint32_t NOCANRX_TO = 2000; // milliseconds
 //  Global variables
 //-----------------------------------------------------------------------------
 
+// time (in ms) of last can message. Used for bootloader timeout.
 static volatile uint32_t lastcanrx;
 
 //-----------------------------------------------------------------------------
@@ -193,7 +198,7 @@ void bl_tx_resp(uint8_t cmd, uint8_t ec)
 	m.RTR = CAN_RTR_DATA;
 	m.DLC = 3;
   uint8_t data[3];
-	data[0] = BL_BOARD_ID;
+	data[0] = PVARS->bl_board_id;
 	data[1] = cmd;
 	data[2] = ec;
   uint32_t mailbox;
@@ -227,72 +232,65 @@ void process_can_msg(CAN_RxHeaderTypeDef* msg, uint8_t data[])
 	if( (msg->StdId == CANID_BOOTLOADER_CMD) && (msg->DLC == 8) ) {
 		struct bl_cmd_t blc;
 		memcpy(&blc, data, 8);
-		if( blc.brd != BL_BOARD_ID ) return;
+		if( blc.brd != PVARS->bl_board_id ) return;
     message_received = 1;
 		lastcanrx = HAL_GetTick();
 
-    // ping command - just respond with OK
-		if( blc.cmd == BL_CMD_PING ) {
-      bl_tx_resp(blc.cmd, 0); // OK
-			return;
-		}
+    switch (blc.cmd) {
+      case BL_CMD_PING: // ping command - just respond with OK
+        bl_tx_resp(blc.cmd, 0); // OK
+        break;
+        
+      case BL_CMD_WRITE_BUF: // write buffer command, par1 = offset, par2 =data
+        if( blc.par1 < PAGE_SIZE ) {
+          pagebuf[blc.par1] = blc.par2;
+          bl_tx_resp(blc.cmd, 0); // OK
+        } else {
+          bl_tx_resp(blc.cmd, 1); // invalid ofs
+        }
+			  break;
 
-		// write buffer command, par1 = offset, par2 =data
-		if( blc.cmd == BL_CMD_WRITE_BUF ) {
-			if( blc.par1 < PAGE_SIZE ) {
-				pagebuf[blc.par1] = blc.par2;
-				bl_tx_resp(blc.cmd, 0); // OK
-			} else {
-				bl_tx_resp(blc.cmd, 1); // invalid ofs
-			}
-			return;
-		}
+      case BL_CMD_WRITE_PAGE: // write page command, par1 = page number, par2 = crc
+        if( blc.par1 < PAGE_COUNT) {
+          uint32_t crc = HAL_CRC_Calculate(&hcrc, pagebuf, PAGE_SIZE);
+          if( crc == blc.par2 ) {
+            uint32_t pgofs = blc.par1 * PAGE_SIZE;
+            uint8_t r = fls_wr(APP_BASE + pgofs, pagebuf, PAGE_SIZE);
+            if( r ) {
+              bl_tx_resp(blc.cmd, 3); // verify failed
+            } else {
+              bl_tx_resp(blc.cmd, 0); // OK
+            }
+          } else {
+            bl_tx_resp(blc.cmd, 2); // invalid CRC
+          }
+        } else {
+          bl_tx_resp(blc.cmd, 1); // invalid pagenum
+        }
+        break;
 
-		// write page command, par1 = page number, par2 = crc
-		if( blc.cmd == BL_CMD_WRITE_PAGE ) {
-			if( blc.par1 < PAGE_COUNT) {
-        uint32_t crc = HAL_CRC_Calculate(&hcrc, pagebuf, PAGE_SIZE);
-				if( crc == blc.par2 ) {
-					uint32_t pgofs = blc.par1 * PAGE_SIZE;
-					uint8_t r = fls_wr(APP_BASE + pgofs, pagebuf, PAGE_SIZE);
-					if( r ) {
-						bl_tx_resp(blc.cmd, 3); // verify failed
-				  } else {
-						bl_tx_resp(blc.cmd, 0); // OK
-					}
-				} else {
-					bl_tx_resp(blc.cmd, 2); // invalid CRC
-				}
-			} else {
-				bl_tx_resp(blc.cmd, 1); // invalid pagenum
-			}
-			return;
-		}
-
-		// write CRC command, par1 = number of pages, par2 = crc
-		if( blc.cmd == BL_CMD_WRITE_CRC ) {
-			if( blc.par1 <= PAGE_COUNT ) {
-				__HAL_CRC_DR_RESET(&hcrc);
-
-				uint32_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)APP_BASE, blc.par1 * PAGE_SIZE);
-				if( crc == blc.par2 ) {
-					struct bl_pvars_t pv;
-					pv.app_page_count = blc.par1;
-					pv.app_crc = blc.par2;
-					uint8_t r = fls_wr(APP_BASE - PAGE_SIZE, (uint32_t*)&pv, sizeof(pv)/4);
-					if( r ) {
-						bl_tx_resp(blc.cmd, 3); // verify failed
-				  } else {
-						bl_tx_resp(blc.cmd, 0); // OK
-					}
-				} else {
-					bl_tx_resp(blc.cmd, 2); // invalid CRC
-				}
-			} else {
-				bl_tx_resp(blc.cmd, 1); // invalid number of pages
-			}
-			return;
-		}
+      case BL_CMD_WRITE_CRC: // write CRC command, par1 = number of pages, par2 = crc
+        if( blc.par1 <= PAGE_COUNT ) {
+          uint32_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)APP_BASE, blc.par1 * PAGE_SIZE);
+          if( crc == blc.par2 ) {
+            struct bl_pvars_t pv;
+            pv.app_page_count = blc.par1;
+            pv.app_crc = blc.par2;
+            pv.bl_board_id = PVARS->bl_board_id;
+            uint8_t r = fls_wr(APP_BASE - PAGE_SIZE, (uint32_t*)&pv, sizeof(pv)/4);
+            if( r ) {
+              bl_tx_resp(blc.cmd, 3); // verify failed
+            } else {
+              bl_tx_resp(blc.cmd, 0); // OK
+            }
+          } else {
+            bl_tx_resp(blc.cmd, 2); // invalid CRC
+          }
+        } else {
+          bl_tx_resp(blc.cmd, 1); // invalid number of pages
+        }
+        break;
+    }
 	}
 }
 

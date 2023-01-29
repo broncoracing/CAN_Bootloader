@@ -22,7 +22,7 @@ TARGET = CAN_Bootloader
 # debug build?
 DEBUG = 1
 # optimization
-OPT = -Og
+OPT = -Os
 
 
 #######################################
