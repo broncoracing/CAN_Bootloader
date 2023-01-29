@@ -14,9 +14,35 @@ Install the required python packages from `can_flash/requirements.txt`:
 cd can_flash/
 pip install -r requirements.txt
 ```
-Run `can_flash/can_flash.py` to flash the firmware to the board:
+Use `can_flash/can_flash.py` to flash the firmware to the board
 ```bash
-python3 can_flash.py [board_id] [path/to/firmware.bin]
+options:
+  -h, --help            show this help message and exit
+
+commands:
+  {flash,change_id,list}
+    flash               Flash a board
+    change_id           Change the ID of a board
+    list                List connected boards
+
+usage: can_flash.py flash [-h] -b BOARD [filepath]
+
+positional arguments:
+  filepath              Path to the .bin file to be flashed
+
+options:
+  -h, --help            show this help message and exit
+  -b BOARD, --board BOARD
+                        Integer input for board ID
+
+usage: can_flash.py change_id [-h] -b BOARD -i ID
+
+options:
+  -h, --help            show this help message and exit
+  -b BOARD, --board BOARD
+                        Integer input for board ID
+  -i ID, --id ID        new ID for the board
+
 ```
 
 ## Necessary application changes
@@ -52,14 +78,19 @@ switch (msg.StdId) {
 ## Protocol
 The bootloader communicates over the CAN bus at a rate of 500kBaud. This must match the baud rate of the application so that the flasher script can send a message to the application to reset.
 
-### The bootloader implements 4 commands:
+### The bootloader implements 5 commands:
 
     Write page buffer (BL_CMD_WRITE_BUF) is used to fill the bootloader's page buffer (in RAM) with data
     Write page (BL_CMD_WRITE_PAGE) is used to write the page buffer to flash
     Write CRC (BL_CMD_WRITE_CRC) is used to store entire flash CRC
     Ping (BL_CMD_PING) does nothing and replies, to verify that the bootloader is running.
+    Set ID (BL_CMD_SET_ID) is used to set the board ID (See below). The response contains the new ID.
 
-### All 3 commands have the same format (8 bytes of standard CAN frame are used):
+All commands (except for PING) are only carried out if the board ID in the command matches the board's ID.
+
+Ping is a special command which all boards reply to, regardless of ID.
+
+### All 5 commands have the same format (8 bytes of standard CAN frame are used):
 
     uint8_t board ID
     uint8_t command
@@ -82,6 +113,15 @@ Each board appearing on the CAN bus should have a unique board ID. This assures 
 
     page count (par1), number of pages the firmware uses
     firmware CRC (par2), entire firmware CRC, if not matching the flash contents, bootloader will not flash firmware CRC
+
+### Ping:
+
+There's no data in a ping command. Just leave it as zeros.
+    
+### Set ID:
+  
+    new ID (par1), the new ID for this board
+    par2 is unused
 
 ## Bootloader operation:
 Normal boot sequence:
@@ -108,5 +148,11 @@ Flashing sequence:
 - Repeat above steps for all pages.
 - Finally execute Write CRC command providing the correct CRC for entire firmware. The bootloader will compare your CRC to the CRC of the MCU's flash. If they match, it will store the CRC in an unused page, allowing subsequent application execution.
 
+
+# TODO/Future Ideas:
+- Support for retrying failed page writes in the flasher script
+- Shrink the bootloader. By replacing some CubeMX init functions with direct register accesses, it should be possible to cut out the couple kilobytes required to fit in the first 8k of flash, freeing up another 4k for applications.
+  - Biggest offenders are HAL_RCC_OscConfig, HAL_CAN_IRQHandler, HAL_GPIO_Init, HAL_CAN_Init, and HAL_RCC_ClockConfig, which all take several hundred bytes to set up a few registers.
+- Support for more microcontrollers. Maybe an F4? This shouldn't be too hard, as CubeMX handles all of the initialization.
 
 
