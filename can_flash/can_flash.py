@@ -48,7 +48,7 @@ def flash(board_id, filepath):
 
     # TODO Ability to retry pages that failed
     for p in range(num_pages):
-        print(f'Page {p}/{num_pages}', end='')
+        print(f'Page {p}/{num_pages - 1}', end='')
         # Start calculating page CRC
         pcrc = crcmod.Crc(0x104c11db7, initCrc=0xffffffff, rev=False)
 
@@ -91,8 +91,8 @@ def flash(board_id, filepath):
 
 
 def change_id(board_id, new_id):
-    if new_id < 0 or new_id > 255:
-        print('Invalid ID. Choose an ID from 0-255.')
+    if new_id < 0 or new_id >= 255:
+        print('Invalid ID. Choose an ID from 0-254.')
         exit(1)
 
     bus = get_can_bus()

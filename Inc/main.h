@@ -28,8 +28,6 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f1xx_hal.h"
-#include <string.h>
-#include "version.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -114,8 +112,8 @@ _Static_assert (sizeof(struct bl_cmd_t) == 8);
 //-----------------------------------------------------------------------------
 
 // CAN IDs for bootloader to respond to
-static const uint16_t CANID_BOOTLOADER_CMD = 0xB0;
-static const uint16_t CANID_BOOTLOADER_RPLY = 0xB1;
+static const uint16_t CANID_BOOTLOADER_CMD = 0x700;
+static const uint16_t CANID_BOOTLOADER_RPLY = 0x701;
 
 // Magic value stored in memory - if this is present, skip bootloader and jump to app
 static const uint32_t MAGIC_VAL = (uint32_t)(0x36051bf3);
