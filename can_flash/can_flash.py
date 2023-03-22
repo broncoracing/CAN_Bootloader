@@ -3,6 +3,7 @@ import argparse
 
 from can_util import *
 
+PAGE_RETRIES=10
 
 def list_connected_boards():
     print('Searching for connected boards...')
@@ -18,6 +19,18 @@ def list_connected_boards():
                   'Be sure to set a proper ID before flashing these boards.')
 
 
+# (try to) Flash a single page to the mcu
+def flash_page(bus, board_id, page, pcrc, page_data):
+    for w, d in page_data.items():
+        if w % 16 == 0:
+            print('.', end='')
+        # Send data and get response
+        bl_cmd_response(bus, board_id, BL_WBUF, w, d)
+
+    bl_cmd_response(bus, board_id, BL_WPAGE, page, pcrc.digest())
+
+
+# Flash an entire file to the mcu
 def flash(board_id, filepath):
     if not filepath.endswith('.bin'):
         response = input('File path does not end in ".bin". Flash anyway? (Y/n): ')
@@ -53,9 +66,9 @@ def flash(board_id, filepath):
         pcrc = crcmod.Crc(0x104c11db7, initCrc=0xffffffff, rev=False)
 
         # Iterate over each 32-bit word of the page
+        # First generate CRCs and data
+        page_data = {}
         for w in range(PG_SIZE // 4):
-            if w % 16 == 0:
-                print('.', end='')
 
             # Get next data to send
             a = (p * PG_SIZE) + (w * 4)
@@ -65,20 +78,21 @@ def flash(board_id, filepath):
             acrc.update(d)
             pcrc.update(d)
 
-            # Send data and get response
+            page_data[w] = d
+
+        page_success = False
+        for i in range(PAGE_RETRIES):
             try:
-                bl_cmd_response(bus, board_id, BL_WBUF, w, d)
+                flash_page(bus, board_id, p, pcrc, page_data)
+                print(" CRC OK")
+                page_success = True
+                break
             except RuntimeError as e:
-                print(f'\nFirmware upload failed: {e}')
-                exit(1)
-
-        try:
-            bl_cmd_response(bus, board_id, BL_WPAGE, p, pcrc.digest())
-        except RuntimeError as e:
-            print(f'\nPage verification failed: {e}')
+                print('Error flashing page: ', e)
+                print(f'Retrying Page {p}/{num_pages - 1}', end='')
+        if not page_success:
+            print('Page write failed')
             exit(1)
-
-        print(" CRC OK")
 
     print('Verifying...')
     try:
