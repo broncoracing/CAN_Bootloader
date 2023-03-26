@@ -3,11 +3,12 @@ import argparse
 
 from can_util import *
 
-PAGE_RETRIES=10
+PAGE_RETRIES = 10
 
-def list_connected_boards():
+
+def list_connected_boards(channel=None):
     print('Searching for connected boards...')
-    bus = get_can_bus()
+    bus = get_can_bus(channel)
     boards = bl_list_connected_boards(bus)
     if len(boards) == 0:
         print('No boards detected.')
@@ -31,14 +32,14 @@ def flash_page(bus, board_id, page, pcrc, page_data):
 
 
 # Flash an entire file to the mcu
-def flash(board_id, filepath):
-    if not filepath.endswith('.bin'):
+def flash(board_id, filepath, channel=None, interactive=True):
+    if interactive and not filepath.endswith('.bin'):
         response = input('File path does not end in ".bin". Flash anyway? (Y/n): ')
         if 'n' in response.lower():
             print('Firmware flashing canceled')
             exit(0)
 
-    bus = get_can_bus()
+    bus = get_can_bus(channel)
 
     f = open(filepath, "rb")
     b = bytearray(f.read())
@@ -54,8 +55,11 @@ def flash(board_id, filepath):
     # Reset & connect to board
     print(f'Attempting to connect to board with ID {board_id}')
     if not bl_wait_for_connection(bus, board_id):
-        print('Could not connect to board.')
-        exit(1)
+        if interactive:
+            print('Could not connect to board.')
+            exit(1)
+        else:
+            raise RuntimeError('Could not connect to board.')
 
     print(f'Connected to board {board_id}. Uploading {filepath}')
 
@@ -91,25 +95,31 @@ def flash(board_id, filepath):
                 print('Error flashing page: ', e)
                 print(f'Retrying Page {p}/{num_pages - 1}', end='')
         if not page_success:
-            print('Page write failed')
-            exit(1)
+            if interactive:
+                print('Page write failed')
+                exit(1)
+            else:
+                raise RuntimeError('Page write failed')
 
     print('Verifying...')
     try:
         bl_cmd_response(bus, board_id, BL_WCRC, num_pages, acrc.digest())
-    except RuntimeError:
-        print('Verification failed')
-        exit(1)
+    except RuntimeError as e:
+        if not interactive:
+            raise e  # Just pass on the error
+        else:
+            print('Verification failed')
+            exit(1)
 
     print("Board flashed successfully")
 
 
-def change_id(board_id, new_id):
+def change_id(board_id, new_id, channel=None):
     if new_id < 0 or new_id >= 255:
         print('Invalid ID. Choose an ID from 0-254.')
         exit(1)
 
-    bus = get_can_bus()
+    bus = get_can_bus(channel)
 
     print(f'Attempting to connect to board with ID {board_id}')
     if not bl_wait_for_connection(bus, board_id):
@@ -129,6 +139,8 @@ def change_id(board_id, new_id):
 
 def main():
     parser = argparse.ArgumentParser(description='CAN Bootloader flashing utility')
+    parser.add_argument('-c', '--channel', type=str, help='Can channel (Defaults to /dev/ttyACM0 or COM0)', required=False)
+
     subparsers = parser.add_subparsers(title='commands', dest='command')
 
     # Flash sub-parser
@@ -151,11 +163,11 @@ def main():
             print("Error: filepath is required for flash command")
             flash_parser.print_help()
             return
-        flash(args.board, args.filepath)
+        flash(args.board, args.filepath, channel=args.channel)
     elif args.command == 'change_id':
-        change_id(args.board, args.id)
+        change_id(args.board, args.id, channel=args.channel)
     elif args.command == 'list':
-        list_connected_boards()
+        list_connected_boards(channel=args.channel)
     else:
         parser.print_help()
         print()
