@@ -1,5 +1,6 @@
 import crcmod as crcmod
 import argparse
+from boards import board_firmwares
 
 from can_util import *
 
@@ -9,12 +10,19 @@ PAGE_RETRIES = 10
 def list_connected_boards(channel=None):
     print('Searching for connected boards...')
     bus = get_can_bus(channel)
-    boards = bl_list_connected_boards(bus)
-    if len(boards) == 0:
+    board_ids = bl_list_connected_boards(bus)
+    if len(board_ids) == 0:
         print('No boards detected.')
     else:
-        print(f'Detected boards with the following IDs: {boards}')
-        if 0 in boards:
+        print(f'Detected the following boards:')
+        for b_id in board_ids:
+            matching_boards = list(filter(lambda b: b.board_id == b_id, board_firmwares))
+            if len(matching_boards) > 0:
+                print(f'  {b_id} {matching_boards[0].name}')
+            else:
+                print(f'  {b_id} Unknown board')
+
+        if 0 in board_ids:
             print('\nAt least one board with ID 0 detected.\n'
                   'This board likely has a freshly programmed bootloader.\n'
                   'Be sure to set a proper ID before flashing these boards.')
@@ -73,7 +81,6 @@ def flash(board_id, filepath, channel=None, interactive=True):
         # First generate CRCs and data
         page_data = {}
         for w in range(PG_SIZE // 4):
-
             # Get next data to send
             a = (p * PG_SIZE) + (w * 4)
             d = b[a:a + 4][::-1]  # take out 4 bytes and reverse them
@@ -139,7 +146,8 @@ def change_id(board_id, new_id, channel=None):
 
 def main():
     parser = argparse.ArgumentParser(description='CAN Bootloader flashing utility')
-    parser.add_argument('-c', '--channel', type=str, help='Can channel (Defaults to /dev/ttyACM0 or COM0)', required=False)
+    parser.add_argument('-c', '--channel', type=str, help='Can channel (Defaults to /dev/ttyACM0 or COM0)',
+                        required=False)
 
     subparsers = parser.add_subparsers(title='commands', dest='command')
 

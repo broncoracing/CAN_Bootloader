@@ -49,13 +49,13 @@ def main():
             print(red(f'Could not find firmware binary at {fw_binary_path}.'))
             exit(4)
 
-        print(f"Flashing binary {fw_binary_path} to board #{board.id}")
+        print(f"Flashing binary {fw_binary_path} to board #{board.board_id}")
         flashed = False
 
         # Try up to 3 times to flash
         for _i in range(3):
             try:
-                can_flash.flash(board.id, fw_binary_path, channel=args.channel, interactive=False)
+                can_flash.flash(board.board_id, fw_binary_path, channel=args.channel, interactive=False)
                 flashed = True
                 print(green(f'Successfully flashed {board.name}'))
                 break

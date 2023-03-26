@@ -1,0 +1,6 @@
+[submodule "can_flash/firmwares/bcm"]
+	path = can_flash/firmwares/bcm
+	url = git@github.com:broncoracing/bcm.git
+[submodule "can_flash/firmwares/dashboard"]
+	path = can_flash/firmwares/dashboard
+	url = git@github.com:broncoracing/dashboard.git
