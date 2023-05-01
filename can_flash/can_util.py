@@ -92,14 +92,16 @@ def bl_list_connected_boards(bus, timeout_sec=0.1, retries=10):
     return board_ids
 
 
-def get_can_bus():
-    bus = None
-    if platform == "linux" or platform == "linux2" or platform == "darwin":
-        # Stock slcan firmware on Linux (Assuming os x works the same?)
-        bus = can.interface.Bus(bustype='slcan', channel='/dev/ttyACM0', bitrate=500000)
-    elif platform == "win32":
-        bus = can.interface.Bus(bustype='slcan', channel='COM0', bitrate=500000)
+def get_can_bus(channel=None):
+    if channel is None:
+        if platform == "linux" or platform == "linux2" or platform == "darwin":
+            # Stock slcan firmware on Linux (Assuming os x works the same?)
+            channel = '/dev/ttyACM0'
+        elif platform == "win32":
+            channel = 'COM0'
+        else:
+            raise ValueError('Channel not specified and OS not recognized')
 
-    if bus is None:
-        raise RuntimeError('Could not initialize CAN bus: OS not recognized')
+    bus = can.interface.Bus(bustype='slcan', channel=channel, bitrate=500000)
+
     return bus
