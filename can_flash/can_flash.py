@@ -7,6 +7,8 @@ from boards import board_firmwares
 
 from can_util import *
 
+from sys import platform
+
 PAGE_RETRIES = 10
 
 
@@ -134,23 +136,27 @@ def multi_flash(clean=False, channel=None):
                   f"submodules.")
             exit(1)
 
-        # Clean build (if requested)
-        if clean:
-            clean_res = subprocess.run(('make', '-f', 'STM32Make.make', '-C', board.fw_path, 'clean'))
-            if clean_res != 0:
-                print(yellow(f"Error while cleaning {board.fw_path}. That's kinda weird."))
-                # Clean failing is not fatal ...
-                # exit(2)
+        
+        if platform == 'win32':
+            print(yellow('Unable to build firmware automatically on Windows. Do it manually through VSCode instead.'))
+        else:
+            # Clean build (if requested)
+            if clean:
+                clean_res = subprocess.run(('make', '-f', 'STM32Make.make', '-C', board.fw_path, 'clean'))
+                if clean_res != 0:
+                    print(yellow(f"Error while cleaning {board.fw_path}. That's kinda weird."))
+                    # Clean failing is not fatal ...
+                    # exit(2)
 
-        # build the firmware
-        build_res = subprocess.run(
-            ('make', '-f', 'STM32Make.make', '-C', board.fw_path, '-j', '4'),
-            stdout=open(os.devnull, 'wb')
-        )
+            # build the firmware
+            build_res = subprocess.run(
+                ('make', '-f', 'STM32Make.make', '-C', board.fw_path, '-j', '4'),
+                stdout=open(os.devnull, 'wb')
+            )
 
-        if build_res.returncode != 0:
-            print(red(f"Error while building {board.fw_path}. Exiting"))
-            exit(3)
+            if build_res.returncode != 0:
+                print(red(f"Error while building {board.fw_path}. Exiting"))
+                exit(3)
 
         fw_binary_path = board.fw_path / 'build' / 'firmware.bin'
 
@@ -199,6 +205,9 @@ def change_id(board_id, new_id, channel=None):
 
 
 def flash_bl():
+    if platform == 'win32':
+        print('Unable to build/flash bootloader on Windows. Do it manually through VSCode instead.')
+        return
     # Clean build to give a fresh build timestamp for the bootloader
     # This prevents new bootloaders from running old apps
     subprocess.run(('make', '-C', '../', '-f', 'STM32Make.make', 'clean'))
