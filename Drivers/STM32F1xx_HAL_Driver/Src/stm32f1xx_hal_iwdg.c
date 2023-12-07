@@ -8,6 +8,17 @@
   *           + Initialization and Start functions
   *           + IO operation functions
   *
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2016 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
   @verbatim
   ==============================================================================
                     ##### IWDG Generic features #####
@@ -80,18 +91,6 @@
           the reload register
 
   @endverbatim
-  ******************************************************************************
-  * @attention
-  *
-  * <h2><center>&copy; Copyright (c) 2016 STMicroelectronics.
-  * All rights reserved.</center></h2>
-  *
-  * This software component is licensed by ST under BSD 3-Clause license,
-  * the "License"; You may not use this file except in compliance with the
-  * License. You may obtain a copy of the License at:
-  *                        opensource.org/licenses/BSD-3-Clause
-  *
-  ******************************************************************************
   */
 
 /* Includes ------------------------------------------------------------------*/
@@ -115,11 +114,14 @@
 /* Status register needs up to 5 LSI clock periods divided by the clock
    prescaler to be updated. The number of LSI clock periods is upper-rounded to
    6 for the timeout value calculation.
-   The timeout value is also calculated using the highest prescaler (256) and
+   The timeout value is calculated using the highest prescaler (256) and
    the LSI_VALUE constant. The value of this constant can be changed by the user
    to take into account possible LSI clock period variations.
-   The timeout value is multiplied by 1000 to be converted in milliseconds. */
-#define HAL_IWDG_DEFAULT_TIMEOUT ((6UL * 256UL * 1000UL) / LSI_VALUE)
+   The timeout value is multiplied by 1000 to be converted in milliseconds.
+   LSI startup time is also considered here by adding LSI_STARTUP_TIME
+   converted in milliseconds. */
+#define HAL_IWDG_DEFAULT_TIMEOUT        (((6UL * 256UL * 1000UL) / LSI_VALUE) + ((LSI_STARTUP_TIME / 1000UL) + 1UL))
+#define IWDG_KERNEL_UPDATE_FLAGS        (IWDG_SR_RVU | IWDG_SR_PVU)
 /**
   * @}
   */
@@ -188,11 +190,14 @@ HAL_StatusTypeDef HAL_IWDG_Init(IWDG_HandleTypeDef *hiwdg)
   tickstart = HAL_GetTick();
 
   /* Wait for register to be updated */
-  while (hiwdg->Instance->SR != 0x00u)
+  while ((hiwdg->Instance->SR & IWDG_KERNEL_UPDATE_FLAGS) != 0x00u)
   {
     if ((HAL_GetTick() - tickstart) > HAL_IWDG_DEFAULT_TIMEOUT)
     {
-      return HAL_TIMEOUT;
+      if ((hiwdg->Instance->SR & IWDG_KERNEL_UPDATE_FLAGS) != 0x00u)
+      {
+        return HAL_TIMEOUT;
+      }
     }
   }
 
@@ -202,6 +207,7 @@ HAL_StatusTypeDef HAL_IWDG_Init(IWDG_HandleTypeDef *hiwdg)
   /* Return function status */
   return HAL_OK;
 }
+
 
 /**
   * @}
@@ -222,7 +228,6 @@ HAL_StatusTypeDef HAL_IWDG_Init(IWDG_HandleTypeDef *hiwdg)
   * @{
   */
 
-
 /**
   * @brief  Refresh the IWDG.
   * @param  hiwdg  pointer to a IWDG_HandleTypeDef structure that contains
@@ -237,6 +242,7 @@ HAL_StatusTypeDef HAL_IWDG_Refresh(IWDG_HandleTypeDef *hiwdg)
   /* Return function status */
   return HAL_OK;
 }
+
 
 /**
   * @}
@@ -254,5 +260,3 @@ HAL_StatusTypeDef HAL_IWDG_Refresh(IWDG_HandleTypeDef *hiwdg)
 /**
   * @}
   */
-
-/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
