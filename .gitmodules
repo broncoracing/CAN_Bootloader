@@ -4,3 +4,6 @@
 [submodule "can_flash/firmwares/dashboard"]
 	path = can_flash/firmwares/dashboard
 	url = git@github.com:broncoracing/dashboard.git
+[submodule "can_flash/firmwares/cell-tap-pcb"]
+	path = can_flash/firmwares/cell-tap-pcb
+	url = git@github.com:broncoracing/cell-tap-pcb.git
