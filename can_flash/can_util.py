@@ -101,7 +101,9 @@ def get_can_bus(channel=None):
             channel = 'COM0'
         else:
             raise ValueError('Channel not specified and OS not recognized')
-
-    bus = can.interface.Bus(bustype='slcan', channel=channel, bitrate=500000)
+    if "COM" in channel or "/dev" in channel:
+        bus = can.interface.Bus(bustype='slcan', channel=channel, bitrate=500000)
+    else:
+        bus = can.interface.Bus(interface='socketcan', channel=channel, bitrate=500000)
 
     return bus
